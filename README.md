@@ -103,24 +103,26 @@ python bot_v2.py report    # full breakdown of all resolved markets
 
 ## Dashboard
 
-A clean web UI to see weather markets and the bot's computed **edge** (model
-probability − market price), EV, and Kelly sizing. It reuses `bot_v2`'s own math,
-so the numbers match what the bot would trade on.
+A live, auto-refreshing web UI for **today's** weather markets and the bot's
+computed **edge** (model probability − market price), EV, and Kelly sizing. It
+reuses `bot_v2`'s own math, so the numbers match what the bot would trade on.
 
 ```bash
 python dashboard.py            # serve on http://localhost:8787
 python dashboard.py 9000       # custom port
 ```
 
-- **Live scan** — pulls current Polymarket markets for the selected cities, fetches
-  a fresh forecast, and ranks every bucket by edge. Signals (what the bot would
-  actually enter) are highlighted. Markets load progressively per city.
-- **Stored** — shows the balance, P&L, win rate, and saved markets from the bot's
-  `data/` directory once it has been running.
+- **Live feed** — a background thread continuously refreshes today's Polymarket
+  prices for all 20 cities into memory; the browser polls every 5s and re-renders,
+  so the table updates on its own — no buttons to press. Changed prices flash.
+- Forecasts are cached (they change at most hourly); only prices are refetched each
+  cycle, so a full refresh takes well under a second after warm-up.
+- Signals (what the bot would actually enter) are highlighted; filter by region,
+  signals-only, or the forecast's own bucket; sort any column; pause/resume.
 
-No extra dependencies — pure stdlib (`http.server`) plus `requests` (already
-required by the bot). Note: daily markets resolve and new ones open ~24h ahead,
-so the live view depends on which cities currently have open markets.
+No extra dependencies — pure stdlib (`http.server` + `concurrent.futures`) plus
+`requests` (already required by the bot). The feed shows whichever cities currently
+have open markets (daily markets resolve and new ones open ~24h ahead).
 
 ---
 

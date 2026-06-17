@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>WeatherBet — Edge Dashboard</title>
+<title>WeatherBet — Live Edge Feed</title>
 <style>
   :root{
     --bg:#0c0f17; --panel:#141925; --panel2:#1b2230; --line:#27304320;
@@ -20,43 +20,44 @@
     -webkit-font-smoothing:antialiased;
   }
   .wrap{max-width:1200px; margin:0 auto; padding:28px 22px 80px}
+  header{display:flex; align-items:flex-start; justify-content:space-between; gap:16px; flex-wrap:wrap}
   header h1{margin:0; font-size:22px; letter-spacing:-.3px}
   header .sub{color:var(--muted); margin-top:4px; font-size:13px}
   header .sub b{color:var(--accent); font-weight:600}
+
+  /* live status */
+  .live{display:flex; align-items:center; gap:9px; background:var(--panel);
+    border:1px solid var(--border); border-radius:999px; padding:7px 14px;
+    font-size:13px; color:var(--muted); white-space:nowrap}
+  .dot{width:9px; height:9px; border-radius:50%; background:var(--green);
+    box-shadow:0 0 0 0 var(--green); animation:pulse 1.8s infinite}
+  .dot.paused{background:var(--faint); animation:none; box-shadow:none}
+  @keyframes pulse{
+    0%{box-shadow:0 0 0 0 #34d39966} 70%{box-shadow:0 0 0 7px #34d39900}
+    100%{box-shadow:0 0 0 0 #34d39900}}
+  .live b{color:var(--text); font-weight:600}
 
   /* stat cards */
   .cards{display:grid; grid-template-columns:repeat(5,1fr); gap:12px; margin:22px 0}
   .card{background:linear-gradient(180deg,var(--panel),var(--panel2));
     border:1px solid var(--border); border-radius:var(--radius); padding:14px 16px}
   .card .k{color:var(--faint); font-size:11px; text-transform:uppercase; letter-spacing:.6px}
-  .card .v{font-size:22px; font-weight:650; margin-top:6px; letter-spacing:-.5px}
+  .card .v{font-size:22px; font-weight:650; margin-top:6px; letter-spacing:-.5px;
+    font-variant-numeric:tabular-nums}
   .v.green{color:var(--green)} .v.red{color:var(--red)} .v.amber{color:var(--amber)}
 
   /* controls */
   .controls{display:flex; flex-wrap:wrap; gap:10px; align-items:center;
     background:var(--panel); border:1px solid var(--border);
     border-radius:var(--radius); padding:12px 14px}
-  .seg{display:flex; background:var(--panel2); border:1px solid var(--border);
-    border-radius:10px; padding:3px}
-  .seg button{background:none; border:0; color:var(--muted); padding:6px 13px;
-    border-radius:8px; cursor:pointer; font-size:13px; font-weight:550}
-  .seg button.on{background:var(--accent-bg); color:var(--accent)}
   select,.btn{background:var(--panel2); color:var(--text); border:1px solid var(--border);
     border-radius:9px; padding:7px 12px; font-size:13px; cursor:pointer}
-  .btn.primary{background:var(--accent); color:#06122b; border-color:var(--accent);
-    font-weight:650}
-  .btn.primary:disabled{opacity:.5; cursor:default}
+  .btn:hover{border-color:var(--accent)}
   .chk{display:flex; align-items:center; gap:6px; color:var(--muted); font-size:13px;
     cursor:pointer; user-select:none}
   .chk input{accent-color:var(--accent)}
   .spacer{flex:1}
   .hint{color:var(--faint); font-size:12px}
-
-  /* progress */
-  .progress{height:3px; background:var(--panel2); border-radius:3px; overflow:hidden;
-    margin:14px 0 0; opacity:0; transition:opacity .2s}
-  .progress.on{opacity:1}
-  .progress > div{height:100%; width:0; background:var(--accent); transition:width .25s}
 
   /* table */
   .tablewrap{margin-top:16px; border:1px solid var(--border); border-radius:var(--radius);
@@ -69,19 +70,18 @@
   thead th.l{text-align:left}
   thead th .ar{color:var(--accent); font-size:10px}
   tbody td{padding:10px 12px; text-align:right; border-bottom:1px solid var(--line);
-    white-space:nowrap}
+    white-space:nowrap; font-variant-numeric:tabular-nums}
   tbody td.l{text-align:left}
   tbody tr:hover{background:#ffffff06}
   tbody tr.signal{box-shadow:inset 3px 0 0 var(--green)}
-  .mono{font-variant-numeric:tabular-nums; font-feature-settings:"tnum"}
+  td.flash{animation:flash .6s ease-out}
+  @keyframes flash{from{background:var(--accent-bg)} to{background:transparent}}
   .city{font-weight:600}
-  .date{color:var(--muted); font-size:12px}
-  .pos{font-weight:600}.pos.green{color:var(--green)}.pos.red{color:var(--red)}
+  .sub2{color:var(--muted); font-size:12px}
   .tag{display:inline-block; font-size:10px; font-weight:650; padding:2px 7px;
     border-radius:20px; letter-spacing:.3px; vertical-align:middle}
   .tag.match{background:var(--accent-bg); color:var(--accent)}
   .tag.sig{background:var(--green-bg); color:var(--green)}
-  .tag.held{background:#a78bfa18; color:#a78bfa}
   .bucket{font-weight:600}
   .empty{padding:48px; text-align:center; color:var(--faint)}
   .empty b{color:var(--muted)}
@@ -91,44 +91,34 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>🌤 WeatherBet — Edge Dashboard</h1>
-    <div class="sub">Live Polymarket weather markets and the bot's computed edge ·
-      thresholds: <b id="cfg">…</b></div>
+    <div>
+      <h1>🌤 WeatherBet — Live Edge Feed</h1>
+      <div class="sub">Today's Polymarket weather markets, auto-refreshing ·
+        thresholds: <b id="cfg">…</b></div>
+    </div>
+    <div class="live"><span class="dot" id="dot"></span><span id="status">connecting…</span></div>
   </header>
 
   <div class="cards" id="cards"></div>
 
   <div class="controls">
-    <div class="seg" id="mode">
-      <button data-mode="live" class="on">Live scan</button>
-      <button data-mode="stored">Stored</button>
-    </div>
-    <select id="cityset">
-      <option value="all" selected>All cities (20)</option>
-      <option value="us">US cities (6)</option>
+    <select id="region">
+      <option value="all">All regions</option>
+      <option value="us">US</option>
       <option value="eu">Europe</option>
       <option value="asia">Asia</option>
     </select>
-    <select id="days">
-      <option value="0">Today</option>
-      <option value="1" selected>+1 day</option>
-      <option value="2">+2 days</option>
-      <option value="3">+3 days</option>
-    </select>
-    <button class="btn primary" id="scan">Scan</button>
-    <span class="spacer"></span>
     <label class="chk"><input type="checkbox" id="onlySig"> Only signals</label>
     <label class="chk"><input type="checkbox" id="onlyMatch"> Forecast bucket only</label>
+    <span class="spacer"></span>
     <span class="hint" id="count"></span>
+    <button class="btn" id="pause">⏸ Pause</button>
   </div>
-
-  <div class="progress" id="prog"><div></div></div>
 
   <div class="tablewrap">
     <table>
       <thead><tr>
         <th class="l" data-k="city_name">City</th>
-        <th class="l hide-sm" data-k="date">Date</th>
         <th data-k="forecast">Forecast</th>
         <th class="l" data-k="bucket">Bucket</th>
         <th data-k="price">Price</th>
@@ -140,95 +130,52 @@
       </tr></thead>
       <tbody id="rows"></tbody>
     </table>
-    <div class="empty" id="empty">Pick a set of cities and hit <b>Scan</b> to pull live markets.</div>
+    <div class="empty" id="empty">Warming up the live feed…</div>
   </div>
 </div>
 
 <script>
 const $ = s => document.querySelector(s);
-let DATA = [], CFG = {min_ev:0.1, max_price:0.45, min_volume:500}, CITIES = [];
-let MODE = "live";
+let CFG = {min_ev:0.1}, REGION = {}, MODE_REGION = "all";
+let ROWS = [], PREV = {}, META = {};
 let SORT = {k:"edge", dir:-1};
+let PAUSED = false, lastMs = 0;
 
 const fmtPct  = x => x==null ? "—" : (x*100).toFixed(0)+"%";
 const fmtSign = x => (x>=0?"+":"") + x.toFixed(3);
-const money   = x => "$"+Number(x).toLocaleString(undefined,{maximumFractionDigits:0});
-const deg     = (t,u) => t==null ? "—" : Math.round(t)+"°"+(u==="F"?"F":"C");
-
-async function getJSON(u){ const r = await fetch(u); return r.json(); }
+const deg     = (t,u) => t==null ? "—" : (Math.round(t*10)/10)+"°"+(u==="F"?"F":"C");
+const getJSON = async u => (await fetch(u)).json();
+const keyOf   = r => r.city+"|"+r.t_low+"|"+r.t_high;
 
 async function boot(){
   const c = await getJSON("/api/cities");
-  CITIES = c.cities; CFG = c.config;
+  CFG = c.config;
+  c.cities.forEach(x => REGION[x.slug] = x.region);
   $("#cfg").textContent = `EV ≥ ${CFG.min_ev} · price < $${CFG.max_price} · vol ≥ ${CFG.min_volume}`;
-  await loadStoredSummary();
+  tick();                       // first fetch
+  setInterval(tick, 5000);      // live feed: every 5s
+  setInterval(renderStatus, 1000);
 }
 
-async function loadStoredSummary(){
-  const d = await getJSON("/api/stored");
-  renderCards(d.summary);
-}
-
-function renderCards(s){
-  const pnlCls = s.pnl > 0 ? "green" : s.pnl < 0 ? "red" : "";
-  const wr = s.win_rate==null ? "—" : s.win_rate+"%";
-  const cards = [
-    ["Balance", money(s.balance), ""],
-    ["P&L", (s.pnl>=0?"+":"")+money(Math.abs(s.pnl)).slice(0)+` (${s.pnl_pct}%)`, pnlCls],
-    ["Win rate", wr, s.win_rate==null?"":(s.win_rate>=50?"green":"amber")],
-    ["Open positions", s.open_positions, ""],
-    ["Markets tracked", s.markets, ""],
-  ];
-  $("#cards").innerHTML = cards.map(([k,v,c])=>
-    `<div class="card"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join("");
-}
-
-function citySlugs(){
-  const set = $("#cityset").value;
-  return CITIES.filter(c => set==="all" ? true :
-      set==="us" ? c.region==="us" :
-      set==="eu" ? c.region==="eu" :
-      set==="asia" ? c.region==="asia" : true).map(c=>c.slug);
-}
-
-async function scan(){
-  if(MODE==="stored"){ return scanStored(); }
-  const slugs = citySlugs();
-  const days = $("#days").value;
-  DATA = []; render();
-  $("#scan").disabled = true;
-  $("#prog").classList.add("on");
-  let done = 0;
-  const bar = $("#prog").firstElementChild;
-
-  // limited concurrency
-  const queue = slugs.slice();
-  const worker = async () => {
-    while(queue.length){
-      const slug = queue.shift();
-      try{
-        const d = await getJSON(`/api/live?city=${slug}&days=${days}`);
-        DATA.push(...(d.rows||[]));
-      }catch(e){ /* skip city */ }
-      done++; bar.style.width = (done/slugs.length*100)+"%";
-      render();
+async function tick(){
+  if(PAUSED) return;
+  try{
+    const d = await getJSON("/api/feed");
+    META = d;
+    if(d.updated_at){
+      const ms = Date.parse(d.updated_at);
+      if(ms !== lastMs){               // new cycle → remember old prices for flash
+        PREV = {}; ROWS.forEach(r => PREV[keyOf(r)] = r.price);
+        lastMs = ms;
+      }
     }
-  };
-  await Promise.all([worker(),worker(),worker(),worker()]);
-  $("#scan").disabled = false;
-  setTimeout(()=>{ $("#prog").classList.remove("on"); bar.style.width="0"; }, 500);
+    ROWS = d.rows || [];
+    render();
+  }catch(e){ $("#status").textContent = "reconnecting…"; }
 }
 
-async function scanStored(){
-  $("#scan").disabled = true;
-  const d = await getJSON("/api/stored");
-  renderCards(d.summary);
-  DATA = d.rows; render();
-  $("#scan").disabled = false;
-}
-
-function visibleRows(){
-  let rows = DATA.slice();
+function regionRows(){
+  let rows = ROWS.filter(r => MODE_REGION==="all" || REGION[r.city]===MODE_REGION);
   if($("#onlySig").checked)   rows = rows.filter(r=>r.is_signal);
   if($("#onlyMatch").checked) rows = rows.filter(r=>r.is_match);
   rows.sort((a,b)=>{
@@ -239,27 +186,51 @@ function visibleRows(){
   return rows;
 }
 
+function renderCards(){
+  const rows = ROWS.filter(r => MODE_REGION==="all" || REGION[r.city]===MODE_REGION);
+  const sigs = rows.filter(r=>r.is_signal);
+  const best = rows.reduce((m,r)=>Math.max(m, r.edge), 0);
+  const cards = [
+    ["Cities live", META.open_cities ?? "—", ""],
+    ["Open markets", rows.length, ""],
+    ["Signals", sigs.length, sigs.length?"green":""],
+    ["Best edge", rows.length?fmtSign(best):"—", best>0?"green":""],
+    ["Refresh", META.cycle_ms!=null ? (META.cycle_ms/1000).toFixed(1)+"s" : "—", ""],
+  ];
+  $("#cards").innerHTML = cards.map(([k,v,c])=>
+    `<div class="card"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join("");
+}
+
+function renderStatus(){
+  const dot = $("#dot");
+  if(PAUSED){ dot.classList.add("paused"); $("#status").textContent="paused"; return; }
+  dot.classList.remove("paused");
+  if(!lastMs){ $("#status").textContent="warming up…"; return; }
+  const ago = Math.max(0, Math.round((Date.now()-lastMs)/1000));
+  $("#status").innerHTML = `<b>LIVE</b> · updated ${ago}s ago · ${META.open_cities||0} cities`;
+}
+
 function render(){
-  const rows = visibleRows();
-  $("#count").textContent = DATA.length
-    ? `${rows.length} shown · ${DATA.filter(r=>r.is_signal).length} signals`
+  renderCards(); renderStatus();
+  const rows = regionRows();
+  $("#count").textContent = ROWS.length
+    ? `${rows.length} shown · ${rows.filter(r=>r.is_signal).length} signals`
     : "";
+  const ready = META.ready;
   $("#empty").style.display = rows.length ? "none" : "block";
-  if(!DATA.length){
-    $("#empty").innerHTML = MODE==="stored"
-      ? "No saved markets yet. Run <b>python bot_v2.py</b> to collect data."
-      : "Pick a set of cities and hit <b>Scan</b> to pull live markets.";
-  } else if(!rows.length){
-    $("#empty").innerHTML = ($("#onlySig").checked || $("#onlyMatch").checked)
-      ? "No rows match the current filters."
-      : "No open markets for the selected cities right now — daily markets resolve and new ones open ~24h ahead. Try <b>All cities</b> or another region.";
+  if(!ready){ $("#empty").innerHTML = "Warming up the live feed…"; }
+  else if(!ROWS.length){ $("#empty").innerHTML = "No cities have open markets for today right now."; }
+  else if(!rows.length){
+    $("#empty").innerHTML = ($("#onlySig").checked||$("#onlyMatch").checked)
+      ? "No rows match the current filters." : "No open markets in this region right now.";
   }
   $("#rows").innerHTML = rows.map(rowHTML).join("");
+  // sort arrow
   document.querySelectorAll("thead th").forEach(th=>{
-    const a = th.querySelector(".ar"); if(a) a.remove();
+    const a=th.querySelector(".ar"); if(a) a.remove();
     if(th.dataset.k===SORT.k){
       const s=document.createElement("span"); s.className="ar";
-      s.textContent = SORT.dir<0?" ▼":" ▲"; th.appendChild(s);
+      s.textContent=SORT.dir<0?" ▼":" ▲"; th.appendChild(s);
     }
   });
 }
@@ -270,17 +241,15 @@ function rowHTML(r){
   const tags = [];
   if(r.is_match)  tags.push('<span class="tag match">forecast</span>');
   if(r.is_signal) tags.push('<span class="tag sig">signal</span>');
-  if(r.position){
-    const pnl = r.position.pnl;
-    tags.push(`<span class="tag held">held${pnl!=null?` ${pnl>=0?"+":""}${pnl.toFixed(2)}`:""}</span>`);
-  }
-  const col = (v,c)=>`<td class="mono ${c||""}">${v}</td>`;
+  // flash price cell if it changed since last cycle
+  const prev = PREV[keyOf(r)];
+  const flash = (prev!==undefined && prev!==r.price) ? "flash" : "";
+  const col = (v,c)=>`<td class="${c||""}">${v}</td>`;
   return `<tr class="${r.is_signal?"signal":""}">
     <td class="l"><span class="city">${r.city_name}</span></td>
-    <td class="l date hide-sm">${r.date.slice(5)}</td>
-    ${col(`${deg(r.forecast,r.unit)} <span class="date">${r.source}</span>`)}
+    ${col(`${deg(r.forecast,r.unit)} <span class="sub2">${r.source}</span>`)}
     <td class="l"><span class="bucket">${r.bucket}</span> ${tags.join(" ")}</td>
-    ${col("$"+r.price.toFixed(2))}
+    ${col("$"+r.price.toFixed(2), flash)}
     ${col(fmtPct(r.prob))}
     ${col(fmtSign(r.edge), ec)}
     ${col(fmtSign(r.ev), vc)}
@@ -290,21 +259,19 @@ function rowHTML(r){
 }
 
 // events
-$("#mode").addEventListener("click", e=>{
-  const b = e.target.closest("button"); if(!b) return;
-  MODE = b.dataset.mode;
-  [...$("#mode").children].forEach(x=>x.classList.toggle("on", x===b));
-  $("#cityset").disabled = $("#days").disabled = (MODE==="stored");
-  $("#scan").textContent = MODE==="stored" ? "Reload" : "Scan";
-  DATA=[]; render();
-});
-$("#scan").addEventListener("click", scan);
+$("#region").addEventListener("change", e=>{ MODE_REGION=e.target.value; render(); });
 $("#onlySig").addEventListener("change", render);
 $("#onlyMatch").addEventListener("change", render);
+$("#pause").addEventListener("click", ()=>{
+  PAUSED=!PAUSED;
+  $("#pause").textContent = PAUSED ? "▶ Resume" : "⏸ Pause";
+  if(!PAUSED) tick();
+  renderStatus();
+});
 document.querySelectorAll("thead th").forEach(th=>{
   th.addEventListener("click", ()=>{
     if(SORT.k===th.dataset.k) SORT.dir*=-1;
-    else SORT={k:th.dataset.k, dir: th.dataset.k==="city_name"||th.dataset.k==="bucket"?1:-1};
+    else SORT={k:th.dataset.k, dir:(th.dataset.k==="city_name"||th.dataset.k==="bucket")?1:-1};
     render();
   });
 });

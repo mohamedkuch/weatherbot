@@ -20,14 +20,21 @@ Endpoints:
 
 import sys
 import json
-from datetime import datetime, timedelta
+import time
+import threading
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse, parse_qs
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import bot_v2 as bot
 
 HERE = Path(__file__).resolve().parent
+
+# Forecasts change at most hourly, so cache them; Polymarket prices move fast and
+# are refetched every poll cycle.
+FORECAST_TTL = 180  # seconds
 
 
 # ----------------------------------------------------------------------------
@@ -128,6 +135,90 @@ def scan_city(city_slug, days, balance):
 
 
 # ----------------------------------------------------------------------------
+# Live feed — background poller for TODAY's markets across all cities
+# ----------------------------------------------------------------------------
+
+FEED = {"rows": [], "updated_at": None, "cycle_ms": None,
+        "open_cities": 0, "ready": False}
+_feed_lock = threading.Lock()
+_fc_cache  = {}            # city -> (fetched_at, today_snapshot)
+_fc_lock   = threading.Lock()
+
+
+def _forecast_today(city_slug):
+    """Today's forecast snapshot for a city, cached for FORECAST_TTL seconds."""
+    today = bot.city_now(city_slug).strftime("%Y-%m-%d")
+    now   = time.time()
+    with _fc_lock:
+        ent = _fc_cache.get(city_slug)
+        if ent and ent[2] == today and now - ent[0] < FORECAST_TTL:
+            return today, ent[1]
+    snap = bot.take_forecast_snapshot(city_slug, [today]).get(today, {})
+    with _fc_lock:
+        _fc_cache[city_slug] = (now, snap, today)
+    return today, snap
+
+
+def scan_today_city(city_slug, balance):
+    """Edge rows for a city's TODAY market — fresh prices, cached forecast."""
+    loc      = bot.LOCATIONS[city_slug]
+    unit     = loc["unit"]
+    today, snap = _forecast_today(city_slug)
+    forecast = snap.get("best")
+    source   = snap.get("best_source")
+    if forecast is None:
+        return []
+    dt    = datetime.strptime(today, "%Y-%m-%d")
+    event = bot.get_polymarket_event(city_slug, bot.MONTHS[dt.month - 1], dt.day, dt.year)
+    if not event:
+        return []
+    sigma = bot.get_sigma(city_slug, source or "ecmwf")
+    rows  = []
+    for market in event.get("markets", []):
+        rng = bot.parse_temp_range(market.get("question", ""))
+        if not rng:
+            continue
+        try:
+            prices = json.loads(market.get("outcomePrices", "[0.5,0.5]"))
+            yes    = float(prices[0])
+            ask    = float(market.get("bestAsk") or yes)
+        except Exception:
+            continue
+        if ask < 0.02 or ask > 0.97:
+            continue
+        volume = float(market.get("volume", 0) or 0)
+        rows.append(edge_row(city_slug, today, forecast, source, sigma, unit,
+                             rng[0], rng[1], yes, ask, volume, balance))
+    return rows
+
+
+def _safe_scan(city_slug, balance):
+    try:
+        return scan_today_city(city_slug, balance)
+    except Exception:
+        return []
+
+
+def poller(stop_event):
+    """Continuously refresh today's markets for every city into FEED."""
+    cities = list(bot.LOCATIONS)
+    while not stop_event.is_set():
+        t0 = time.time()
+        balance = bot.load_state().get("balance", bot.BALANCE)
+        rows = []
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            for r in ex.map(lambda c: _safe_scan(c, balance), cities):
+                rows.extend(r)
+        with _feed_lock:
+            FEED["rows"]        = rows
+            FEED["updated_at"]  = datetime.now(timezone.utc).isoformat()
+            FEED["cycle_ms"]    = int((time.time() - t0) * 1000)
+            FEED["open_cities"] = len({r["city"] for r in rows})
+            FEED["ready"]       = True
+        stop_event.wait(2)  # brief pause between cycles
+
+
+# ----------------------------------------------------------------------------
 # Stored data (what the bot already saved on disk)
 # ----------------------------------------------------------------------------
 
@@ -214,6 +305,10 @@ class Handler(BaseHTTPRequestHandler):
                                               "max_price": bot.MAX_PRICE,
                                               "min_volume": bot.MIN_VOLUME}})
 
+            if path == "/api/feed":
+                with _feed_lock:
+                    return self._json(dict(FEED))
+
             if path == "/api/stored":
                 return self._json(stored_data())
 
@@ -232,12 +327,16 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8787
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    stop_event = threading.Event()
+    t = threading.Thread(target=poller, args=(stop_event,), daemon=True)
+    t.start()
     print(f"WeatherBet dashboard → http://localhost:{port}")
-    print("Press Ctrl+C to stop.")
+    print("Live feed: today's markets, refreshing continuously. Ctrl+C to stop.")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         print("\nbye")
+        stop_event.set()
         srv.shutdown()
 
 
