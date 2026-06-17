@@ -144,7 +144,7 @@ let PAUSED = false, lastMs = 0;
 const fmtPct  = x => x==null ? "—" : (x*100).toFixed(0)+"%";
 const fmtSign = x => (x>=0?"+":"") + x.toFixed(3);
 const deg     = (t,u) => t==null ? "—" : (Math.round(t*10)/10)+"°"+(u==="F"?"F":"C");
-const getJSON = async u => (await fetch(u)).json();
+const getJSON = async u => (await fetch(u, {cache:"no-store"})).json();
 const keyOf   = r => r.city+"|"+r.t_low+"|"+r.t_high;
 
 async function boot(){

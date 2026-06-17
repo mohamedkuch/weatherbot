@@ -112,11 +112,12 @@ python dashboard.py            # serve on http://localhost:8787
 python dashboard.py 9000       # custom port
 ```
 
-- **Live feed** — a background thread continuously refreshes today's Polymarket
-  prices for all 20 cities into memory; the browser polls every 5s and re-renders,
-  so the table updates on its own — no buttons to press. Changed prices flash.
-- Forecasts are cached (they change at most hourly); only prices are refetched each
-  cycle, so a full refresh takes well under a second after warm-up.
+- **Live feed** — a background thread continuously re-fetches today's forecasts
+  **and** Polymarket prices for all 20 cities (in parallel) into memory; the browser
+  polls every 5s and re-renders, so the table updates on its own — no buttons to
+  press. Changed prices flash.
+- **No caching anywhere** — every cycle pulls everything fresh, and responses are
+  sent `no-store`. A full fresh cycle over all 20 cities takes ~5s.
 - Signals (what the bot would actually enter) are highlighted; filter by region,
   signals-only, or the forecast's own bucket; sort any column; pause/resume.
 

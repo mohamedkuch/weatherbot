@@ -32,9 +32,8 @@ import bot_v2 as bot
 
 HERE = Path(__file__).resolve().parent
 
-# Forecasts change at most hourly, so cache them; Polymarket prices move fast and
-# are refetched every poll cycle.
-FORECAST_TTL = 180  # seconds
+# No caching anywhere — every poll cycle refetches both the forecast and the
+# Polymarket prices fresh.
 
 
 # ----------------------------------------------------------------------------
@@ -141,29 +140,14 @@ def scan_city(city_slug, days, balance):
 FEED = {"rows": [], "updated_at": None, "cycle_ms": None,
         "open_cities": 0, "ready": False}
 _feed_lock = threading.Lock()
-_fc_cache  = {}            # city -> (fetched_at, today_snapshot)
-_fc_lock   = threading.Lock()
-
-
-def _forecast_today(city_slug):
-    """Today's forecast snapshot for a city, cached for FORECAST_TTL seconds."""
-    today = bot.city_now(city_slug).strftime("%Y-%m-%d")
-    now   = time.time()
-    with _fc_lock:
-        ent = _fc_cache.get(city_slug)
-        if ent and ent[2] == today and now - ent[0] < FORECAST_TTL:
-            return today, ent[1]
-    snap = bot.take_forecast_snapshot(city_slug, [today]).get(today, {})
-    with _fc_lock:
-        _fc_cache[city_slug] = (now, snap, today)
-    return today, snap
 
 
 def scan_today_city(city_slug, balance):
-    """Edge rows for a city's TODAY market — fresh prices, cached forecast."""
+    """Edge rows for a city's TODAY market — forecast AND prices fetched fresh."""
     loc      = bot.LOCATIONS[city_slug]
     unit     = loc["unit"]
-    today, snap = _forecast_today(city_slug)
+    today    = bot.city_now(city_slug).strftime("%Y-%m-%d")
+    snap     = bot.take_forecast_snapshot(city_slug, [today]).get(today, {})  # fresh, no cache
     forecast = snap.get("best")
     source   = snap.get("best_source")
     if forecast is None:
@@ -206,7 +190,9 @@ def poller(stop_event):
         t0 = time.time()
         balance = bot.load_state().get("balance", bot.BALANCE)
         rows = []
-        with ThreadPoolExecutor(max_workers=6) as ex:
+        # High concurrency so a fully-fresh (uncached) cycle over every city
+        # still completes quickly — all cities are fetched in parallel.
+        with ThreadPoolExecutor(max_workers=len(cities)) as ex:
             for r in ex.map(lambda c: _safe_scan(c, balance), cities):
                 rows.extend(r)
         with _feed_lock:
@@ -215,7 +201,7 @@ def poller(stop_event):
             FEED["cycle_ms"]    = int((time.time() - t0) * 1000)
             FEED["open_cities"] = len({r["city"] for r in rows})
             FEED["ready"]       = True
-        stop_event.wait(2)  # brief pause between cycles
+        stop_event.wait(0.25)  # loop again almost immediately — always fresh
 
 
 # ----------------------------------------------------------------------------
@@ -278,6 +264,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.send_header("Pragma", "no-cache")
         self.end_headers()
         self.wfile.write(data)
 
