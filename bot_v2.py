@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-weatherbet.py — Weather Trading Bot for Polymarket
+bot_v2.py — Weather Trading Bot for Polymarket
 =====================================================
 Tracks weather forecasts from 3 sources (ECMWF, HRRR, METAR),
 compares with Polymarket markets, paper trades using Kelly criterion.
 
 Usage:
-    python weatherbet.py          # main loop
-    python weatherbet.py report   # full report
-    python weatherbet.py status   # balance and open positions
+    python bot_v2.py          # main loop
+    python bot_v2.py report   # full report
+    python bot_v2.py status   # balance and open positions
 """
 
 import re
@@ -19,14 +19,22 @@ import math
 import time
 import requests
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 # =============================================================================
 # CONFIG
 # =============================================================================
 
-with open("config.json", encoding="utf-8") as f:
-    _cfg = json.load(f)
+try:
+    with open("config.json", encoding="utf-8") as f:
+        _cfg = json.load(f)
+except FileNotFoundError:
+    print("ERROR: config.json not found. Copy config.example.json to config.json and edit it.")
+    sys.exit(1)
+except json.JSONDecodeError as e:
+    print(f"ERROR: config.json is not valid JSON ({e}). Fix the syntax and retry.")
+    sys.exit(1)
 
 BALANCE          = _cfg.get("balance", 10000.0)
 MAX_BET          = _cfg.get("max_bet", 20.0)        # max bet per trade
@@ -90,6 +98,15 @@ TIMEZONES = {
 MONTHS = ["january","february","march","april","may","june",
           "july","august","september","october","november","december"]
 
+def city_now(city_slug):
+    """Current time in the city's local timezone.
+
+    Polymarket weather markets and Open-Meteo's daily forecasts are keyed by the
+    city's LOCAL calendar date, so all date strings must be derived locally — a
+    UTC 'today' is off by a day for far-from-UTC cities at the day boundary.
+    """
+    return datetime.now(ZoneInfo(TIMEZONES.get(city_slug, "UTC")))
+
 # =============================================================================
 # MATH
 # =============================================================================
@@ -98,13 +115,21 @@ def norm_cdf(x):
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 def bucket_prob(forecast, t_low, t_high, sigma=None):
-    """For regular buckets — exact match. For edge buckets — normal distribution."""
+    """Probability the actual temperature lands in the bucket, given a forecast
+    with standard deviation `sigma`.
+
+    Markets resolve on an integer temperature, so a bucket [t_low, t_high]
+    captures true temps in [t_low - 0.5, t_high + 0.5). We integrate the
+    forecast's normal distribution over that interval (continuity correction),
+    rather than treating a forecast that merely lands in the bucket as certain.
+    """
     s = sigma or 2.0
-    if t_low == -999:
-        return norm_cdf((t_high - float(forecast)) / s)
-    if t_high == 999:
-        return 1.0 - norm_cdf((t_low - float(forecast)) / s)
-    return 1.0 if in_bucket(forecast, t_low, t_high) else 0.0
+    f = float(forecast)
+    if t_low == -999:                       # "X or below"  -> actual <= X
+        return norm_cdf((t_high + 0.5 - f) / s)
+    if t_high == 999:                       # "X or higher" -> actual >= X
+        return 1.0 - norm_cdf((t_low - 0.5 - f) / s)
+    return norm_cdf((t_high + 0.5 - f) / s) - norm_cdf((t_low - 0.5 - f) / s)
 
 def calc_ev(p, price):
     if price <= 0 or price >= 1: return 0.0
@@ -119,6 +144,22 @@ def calc_kelly(p, price):
 def bet_size(kelly, balance):
     raw = kelly * balance
     return round(min(raw, MAX_BET), 2)
+
+def valid_temp(temp, unit):
+    """Return temp if physically plausible, else None.
+
+    Guards against API sentinels (e.g. -999), mis-scaled values and unit
+    mix-ups before they can drive a trade. Bounds bracket every record ever
+    observed on Earth with margin.
+    """
+    if temp is None:
+        return None
+    try:
+        t = float(temp)
+    except (TypeError, ValueError):
+        return None
+    lo, hi = (-90.0, 140.0) if unit == "F" else (-70.0, 60.0)
+    return t if lo <= t <= hi else None
 
 # =============================================================================
 # CALIBRATION
@@ -139,7 +180,7 @@ def get_sigma(city_slug, source="ecmwf"):
 
 def run_calibration(markets):
     """Recalculates sigma from resolved markets."""
-    resolved = [m for m in markets if m.get("resolved") and m.get("actual_temp") is not None]
+    resolved = [m for m in markets if m.get("status") == "resolved" and m.get("actual_temp") is not None]
     cal = load_cal()
     updated = []
 
@@ -148,10 +189,13 @@ def run_calibration(markets):
             group = [m for m in resolved if m["city"] == city]
             errors = []
             for m in group:
-                snap = next((s for s in reversed(m.get("forecast_snapshots", []))
-                             if s["source"] == source), None)
-                if snap and snap.get("temp") is not None:
-                    errors.append(abs(snap["temp"] - m["actual_temp"]))
+                # Snapshots store per-source temps under keys ecmwf/hrrr/metar
+                # (not source/temp). Use the most recent snapshot carrying a
+                # value for this source.
+                val = next((s.get(source) for s in reversed(m.get("forecast_snapshots", []))
+                            if s.get(source) is not None), None)
+                if val is not None:
+                    errors.append(abs(val - m["actual_temp"]))
             if len(errors) < CALIBRATION_MIN:
                 continue
             mae  = sum(errors) / len(errors)
@@ -186,9 +230,12 @@ def get_ecmwf(city_slug, dates):
     )
     for attempt in range(3):
         try:
-            data = requests.get(url, timeout=(5, 10)).json()
+            resp = requests.get(url, timeout=(5, 10))
+            resp.raise_for_status()
+            data = resp.json()
             if "error" not in data:
                 for date, temp in zip(data["daily"]["time"], data["daily"]["temperature_2m_max"]):
+                    temp = valid_temp(temp, unit)
                     if date in dates and temp is not None:
                         result[date] = round(temp, 1) if unit == "C" else round(temp)
             break
@@ -214,9 +261,12 @@ def get_hrrr(city_slug, dates):
     )
     for attempt in range(3):
         try:
-            data = requests.get(url, timeout=(5, 10)).json()
+            resp = requests.get(url, timeout=(5, 10))
+            resp.raise_for_status()
+            data = resp.json()
             if "error" not in data:
                 for date, temp in zip(data["daily"]["time"], data["daily"]["temperature_2m_max"]):
+                    temp = valid_temp(temp, "F")
                     if date in dates and temp is not None:
                         result[date] = round(temp)
             break
@@ -236,11 +286,11 @@ def get_metar(city_slug):
         url = f"https://aviationweather.gov/api/data/metar?ids={station}&format=json"
         data = requests.get(url, timeout=(5, 8)).json()
         if data and isinstance(data, list):
-            temp_c = data[0].get("temp")
+            temp_c = valid_temp(data[0].get("temp"), "C")
             if temp_c is not None:
                 if unit == "F":
-                    return round(float(temp_c) * 9/5 + 32)
-                return round(float(temp_c), 1)
+                    return round(temp_c * 9/5 + 32)
+                return round(temp_c, 1)
     except Exception as e:
         print(f"  [METAR] {city_slug}: {e}")
     return None
@@ -271,19 +321,22 @@ def check_market_resolved(market_id):
     Returns: None (still open), True (YES won), False (NO won)
     """
     try:
-        r = requests.get(f"https://gamma-api.polymarket.com/markets/{market_id}", timeout=(5, 8))
-        data = r.json()
+        data = poly_get(f"https://gamma-api.polymarket.com/markets/{market_id}")
+        if data is None:
+            return None  # fetch failed — retry next cycle, don't assume resolved
         closed = data.get("closed", False)
         if not closed:
             return None
-        # Check YES price — if ~1.0 then WIN, if ~0.0 then LOSS
+        # Market is closed → it HAS resolved. When a market finalizes its
+        # outcomePrices snap to ~1.0/~0.0, so the settled YES price decides the
+        # side. Previously anything in 0.05–0.95 returned None and the position
+        # was treated as open forever, leaking capital. Decide by >= 0.5 instead,
+        # and flag the rare ambiguous (near-0.5) close for visibility.
         prices = json.loads(data.get("outcomePrices", "[0.5,0.5]"))
         yes_price = float(prices[0])
-        if yes_price >= 0.95:
-            return True   # WIN
-        elif yes_price <= 0.05:
-            return False  # LOSS
-        return None  # not yet determined
+        if 0.05 < yes_price < 0.95:
+            print(f"  [RESOLVE] {market_id}: closed at ambiguous YES {yes_price:.2f} — settling as {'WIN' if yes_price >= 0.5 else 'LOSS'}")
+        return yes_price >= 0.5
     except Exception as e:
         print(f"  [RESOLVE] {market_id}: {e}")
     return None
@@ -292,21 +345,38 @@ def check_market_resolved(market_id):
 # POLYMARKET
 # =============================================================================
 
+def poly_get(url, timeout=(5, 8), retries=3):
+    """GET JSON from Polymarket with HTTP-status check and retry/backoff.
+
+    Returns parsed JSON, or None on persistent failure. A non-2xx response
+    raises (via raise_for_status) and is retried, instead of being silently
+    parsed as if it were valid data.
+    """
+    for attempt in range(retries):
+        try:
+            r = requests.get(url, timeout=timeout)
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            if attempt < retries - 1:
+                time.sleep(2)
+            else:
+                print(f"  [HTTP] {url.split('?')[0]}: {e}")
+    return None
+
 def get_polymarket_event(city_slug, month, day, year):
     slug = f"highest-temperature-in-{city_slug}-on-{month}-{day}-{year}"
-    try:
-        r = requests.get(f"https://gamma-api.polymarket.com/events?slug={slug}", timeout=(5, 8))
-        data = r.json()
-        if data and isinstance(data, list) and len(data) > 0:
-            return data[0]
-    except Exception:
-        pass
+    data = poly_get(f"https://gamma-api.polymarket.com/events?slug={slug}")
+    if data and isinstance(data, list) and len(data) > 0:
+        return data[0]
     return None
 
 def get_market_price(market_id):
+    data = poly_get(f"https://gamma-api.polymarket.com/markets/{market_id}", timeout=(3, 5))
+    if not data:
+        return None
     try:
-        r = requests.get(f"https://gamma-api.polymarket.com/markets/{market_id}", timeout=(3, 5))
-        prices = json.loads(r.json().get("outcomePrices", "[0.5,0.5]"))
+        prices = json.loads(data.get("outcomePrices", "[0.5,0.5]"))
         return float(prices[0])
     except Exception:
         return None
@@ -416,14 +486,16 @@ def take_forecast_snapshot(city_slug, dates):
     now_str = datetime.now(timezone.utc).isoformat()
     ecmwf   = get_ecmwf(city_slug, dates)
     hrrr    = get_hrrr(city_slug, dates)
-    today   = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Local-date keys, to match Open-Meteo's local daily.time and the market date.
+    today      = city_now(city_slug).strftime("%Y-%m-%d")
+    hrrr_until = (city_now(city_slug) + timedelta(days=2)).strftime("%Y-%m-%d")
 
     snapshots = {}
     for date in dates:
         snap = {
             "ts":    now_str,
             "ecmwf": ecmwf.get(date),
-            "hrrr":  hrrr.get(date) if date <= (datetime.now(timezone.utc) + timedelta(days=2)).strftime("%Y-%m-%d") else None,
+            "hrrr":  hrrr.get(date) if date <= hrrr_until else None,
             "metar": get_metar(city_slug) if date == today else None,
         }
         # Best forecast: HRRR for US D+0/D+1, otherwise ECMWF
@@ -437,6 +509,17 @@ def take_forecast_snapshot(city_slug, dates):
         else:
             snap["best"] = None
             snap["best_source"] = None
+
+        # Cross-source sanity: if the two daily-max models (ECMWF and HRRR) are
+        # both available but disagree sharply, the data is suspect — don't trade
+        # this date rather than betting on a single possibly-wrong number.
+        # (METAR is an instantaneous obs, not a daily max, so it isn't compared.)
+        disagree = 8.0 if loc["unit"] == "F" else 4.5
+        if snap["ecmwf"] is not None and snap["hrrr"] is not None \
+                and abs(snap["ecmwf"] - snap["hrrr"]) > disagree:
+            snap["best"] = None
+            snap["best_source"] = None
+            snap["source_conflict"] = True
         snapshots[date] = snap
     return snapshots
 
@@ -456,7 +539,11 @@ def scan_and_update():
         print(f"  -> {loc['name']}...", end=" ", flush=True)
 
         try:
-            dates = [(now + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(4)]
+            # City-local dates so they line up with Open-Meteo's local daily
+            # keys and the Polymarket market date (UTC would be off by a day for
+            # far-from-UTC cities at the day boundary).
+            base = city_now(city_slug)
+            dates = [(base + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(4)]
             snapshots = take_forecast_snapshot(city_slug, dates)
             time.sleep(0.3)
         except Exception as e:
@@ -470,7 +557,10 @@ def scan_and_update():
                 continue
 
             end_date = event.get("endDate", "")
-            hours    = hours_to_resolution(end_date) if end_date else 0
+            # Missing endDate → unknown, not "0 hours left". Defaulting to 0 made
+            # the time-close branch (hours < 0.5) fire on a transient missing
+            # field. Treat it as far-future so neither close nor new-entry fires.
+            hours    = hours_to_resolution(end_date) if end_date else 999.0
             horizon  = f"D+{i}"
 
             # Load or create market record
@@ -495,8 +585,14 @@ def scan_and_update():
                     continue
                 try:
                     prices = json.loads(market.get("outcomePrices", "[0.5,0.5]"))
-                    bid = float(prices[0])
-                    ask = float(prices[1]) if len(prices) > 1 else bid
+                    # outcomePrices = [YES_price, NO_price] and sums to ~1.0.
+                    # prices[0] is the YES mid — NOT a bid/ask, and prices[1]
+                    # (the NO price) must never be used as the YES ask. Prefer
+                    # real top-of-book if the event payload carries it; otherwise
+                    # fall back to the YES mid for both bid and ask.
+                    yes_price = float(prices[0])
+                    ask = float(market.get("bestAsk") or yes_price)
+                    bid = float(market.get("bestBid") or yes_price)
                 except Exception:
                     continue
                 outcomes.append({
@@ -505,8 +601,8 @@ def scan_and_update():
                     "range":     rng,
                     "bid":       round(bid, 4),
                     "ask":       round(ask, 4),
-                    "price":     round(bid, 4),   # for compatibility
-                    "spread":    round(ask - bid, 4),
+                    "price":     round(yes_price, 4),   # YES mid, for compatibility
+                    "spread":    round(max(0.0, ask - bid), 4),
                     "volume":    round(volume, 0),
                 })
 
@@ -572,15 +668,26 @@ def scan_and_update():
                         print(f"  [{reason}] {loc['name']} {date} | entry ${entry:.3f} exit ${current_price:.3f} | PnL: {'+'if pnl>=0 else ''}{pnl:.2f}")
 
             # --- CLOSE POSITION if forecast shifted 2+ degrees ---
-            if mkt.get("position") and forecast_temp is not None:
+            # Guard on status=="open" so a position already closed by the
+            # stop-loss block above isn't closed (and credited) a second time.
+            if mkt.get("position") and mkt["position"].get("status") == "open" and forecast_temp is not None:
                 pos = mkt["position"]
                 old_bucket_low  = pos["bucket_low"]
                 old_bucket_high = pos["bucket_high"]
                 # 2-degree buffer — avoid closing on small forecast fluctuations
                 unit = loc["unit"]
                 buffer = 2.0 if unit == "F" else 1.0
-                mid_bucket = (old_bucket_low + old_bucket_high) / 2 if old_bucket_low != -999 and old_bucket_high != 999 else forecast_temp
-                forecast_far = abs(forecast_temp - mid_bucket) > (abs(mid_bucket - old_bucket_low) + buffer)
+                # Close once the forecast leaves the bucket by more than `buffer`.
+                # Edge buckets (-999/999) are open-ended on one side, so only the
+                # finite boundary is checked — this also fixes the prior logic
+                # where edge buckets could never trigger a forecast-based close.
+                if old_bucket_low == -999:
+                    forecast_far = forecast_temp > old_bucket_high + buffer
+                elif old_bucket_high == 999:
+                    forecast_far = forecast_temp < old_bucket_low - buffer
+                else:
+                    forecast_far = (forecast_temp < old_bucket_low - buffer or
+                                    forecast_temp > old_bucket_high + buffer)
                 if not in_bucket(forecast_temp, old_bucket_low, old_bucket_high) and forecast_far:
                     current_price = None
                     for o in outcomes:
@@ -671,8 +778,17 @@ def scan_and_update():
                             best_signal["spread"]       = real_spread
                             best_signal["shares"]       = round(best_signal["cost"] / real_ask, 2)
                             best_signal["ev"]           = round(calc_ev(best_signal["p"], real_ask), 4)
+                            # Re-apply the EV gate against the real ask — a worse
+                            # fill can drop EV below MIN_EV even though the cached
+                            # price cleared it.
+                            if best_signal["ev"] < MIN_EV:
+                                print(f"  [SKIP] {loc['name']} {date} — EV {best_signal['ev']:+.2f} below min after real ask")
+                                skip_position = True
                     except Exception as e:
-                        print(f"  [WARN] Could not fetch real ask for {best_signal['market_id']}: {e}")
+                        # Fail closed: without a live price we can't validate
+                        # slippage, so skip rather than enter at a stale price.
+                        print(f"  [SKIP] {loc['name']} {date} — could not fetch real ask ({e}); skipping")
+                        skip_position = True
 
                     if not skip_position and best_signal["entry_price"] < MAX_PRICE:
                         balance -= best_signal["cost"]
@@ -726,6 +842,13 @@ def scan_and_update():
         mkt["pnl"]          = pnl
         mkt["status"]       = "resolved"
         mkt["resolved_outcome"] = "win" if won else "loss"
+
+        # Fetch the actual max temp so self-calibration can learn forecast error.
+        # Best-effort: needs a Visual Crossing key; stays None (calibration just
+        # skips this market) when the key is absent.
+        actual = get_actual_temp(mkt["city"], mkt["date"])
+        if actual is not None:
+            mkt["actual_temp"] = actual
 
         if won:
             state["wins"] += 1
@@ -876,14 +999,11 @@ def monitor_positions():
 
         # Fetch real bestBid from Polymarket API — actual sell price
         current_price = None
-        try:
-            r = requests.get(f"https://gamma-api.polymarket.com/markets/{mid}", timeout=(3, 5))
-            mdata = r.json()
+        mdata = poly_get(f"https://gamma-api.polymarket.com/markets/{mid}", timeout=(3, 5))
+        if mdata is not None:
             best_bid = mdata.get("bestBid")
             if best_bid is not None:
                 current_price = float(best_bid)
-        except Exception:
-            pass
 
         # Fallback to cached price if API failed
         if current_price is None:
@@ -893,6 +1013,10 @@ def monitor_positions():
                     break
 
         if current_price is None:
+            # Could not price the position from the API or cache — surface it
+            # rather than silently skipping the stop/take-profit check.
+            city_name = LOCATIONS.get(mkt["city"], {}).get("name", mkt["city"])
+            print(f"  [WARN] {city_name} {mkt.get('date','')} — no price for open position; stop not checked this cycle")
             continue
 
         entry = pos["entry_price"]
@@ -1025,4 +1149,4 @@ if __name__ == "__main__":
         _cal = load_cal()
         print_report()
     else:
-        print("Usage: python weatherbet.py [run|status|report]")
+        print("Usage: python bot_v2.py [run|status|report]")

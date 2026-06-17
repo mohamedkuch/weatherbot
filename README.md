@@ -13,8 +13,10 @@ The foundation. Scans 6 US cities, fetches forecasts from NWS using airport stat
 
 No math, no complexity. Just the core logic — good for understanding how the system works.
 
-### `weatherbet.py` — Full Bot (current)
-Everything in v1, plus:
+> **Note:** v1 and v2 are separate programs with separate config schemas, not a strict subset. `bot_v1.py` reads its own keys (`entry_threshold`, `exit_threshold`, `max_trades_per_run`, `min_hours_to_resolution`) which are **not** in `config.json` — so it runs on its built-in defaults. `bot_v2.py` uses the EV/Kelly keys shown below.
+
+### `bot_v2.py` — Full Bot (current)
+Builds on v1's idea (forecast → matching Polymarket bucket), plus:
 - **20 cities** across 4 continents (US, Europe, Asia, South America, Oceania)
 - **3 forecast sources** — ECMWF (global), HRRR/GFS (US, hourly), METAR (real-time observations)
 - **Expected Value** — skips trades where the math doesn't work
@@ -73,9 +75,9 @@ Create `config.json` in the project folder:
 {
   "balance": 10000.0,
   "max_bet": 20.0,
-  "min_ev": 0.05,
+  "min_ev": 0.1,
   "max_price": 0.45,
-  "min_volume": 2000,
+  "min_volume": 500,
   "min_hours": 2.0,
   "max_hours": 72.0,
   "kelly_fraction": 0.25,
@@ -92,9 +94,9 @@ Get a free Visual Crossing API key at visualcrossing.com — used to fetch actua
 
 ## Usage
 ```bash
-python weatherbet.py           # start the bot — scans every hour
-python weatherbet.py status    # balance and open positions
-python weatherbet.py report    # full breakdown of all resolved markets
+python bot_v2.py           # start the bot — scans every hour
+python bot_v2.py status    # balance and open positions
+python bot_v2.py report    # full breakdown of all resolved markets
 ```
 
 ---
