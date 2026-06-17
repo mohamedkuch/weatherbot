@@ -40,6 +40,19 @@ HERE = Path(__file__).resolve().parent
 # Edge computation (shared shape for stored + live)
 # ----------------------------------------------------------------------------
 
+def event_url(city_slug, date, event_slug=None):
+    """Polymarket event page for a city's market on a given date.
+
+    Prefers the authoritative slug from the API; falls back to reconstructing it
+    the same way the bot builds the lookup slug.
+    """
+    if not event_slug:
+        dt = datetime.strptime(date, "%Y-%m-%d")
+        event_slug = (f"highest-temperature-in-{city_slug}-on-"
+                      f"{bot.MONTHS[dt.month - 1]}-{dt.day}-{dt.year}")
+    return f"https://polymarket.com/event/{event_slug}"
+
+
 def bucket_label(t_low, t_high, unit):
     sym = "F" if unit == "F" else "C"
     if t_low == -999:
@@ -52,7 +65,7 @@ def bucket_label(t_low, t_high, unit):
 
 
 def edge_row(city_slug, date, forecast, source, sigma, unit, t_low, t_high,
-             yes_price, ask, volume, balance, position=None):
+             yes_price, ask, volume, balance, position=None, url=None):
     """Compute one bucket's edge using the bot's own math."""
     p     = round(bot.bucket_prob(forecast, t_low, t_high, sigma), 4)
     ev    = bot.calc_ev(p, ask)
@@ -84,6 +97,7 @@ def edge_row(city_slug, date, forecast, source, sigma, unit, t_low, t_high,
         "is_match": bool(bot.in_bucket(forecast, t_low, t_high)),
         "is_signal": bool(is_signal),
         "position": position,
+        "url": url or event_url(city_slug, date),
     }
 
 
@@ -112,6 +126,7 @@ def scan_city(city_slug, days, balance):
         if not event:
             continue
         sigma = bot.get_sigma(city_slug, source or "ecmwf")
+        url   = event_url(city_slug, date, event.get("slug"))
         for market in event.get("markets", []):
             rng = bot.parse_temp_range(market.get("question", ""))
             if not rng:
@@ -129,7 +144,7 @@ def scan_city(city_slug, days, balance):
                 continue
             volume = float(market.get("volume", 0) or 0)
             rows.append(edge_row(city_slug, date, forecast, source, sigma, unit,
-                                 rng[0], rng[1], yes, ask, volume, balance))
+                                 rng[0], rng[1], yes, ask, volume, balance, url=url))
     return rows
 
 
@@ -157,6 +172,7 @@ def scan_today_city(city_slug, balance):
     if not event:
         return []
     sigma = bot.get_sigma(city_slug, source or "ecmwf")
+    url   = event_url(city_slug, today, event.get("slug"))
     rows  = []
     for market in event.get("markets", []):
         rng = bot.parse_temp_range(market.get("question", ""))
@@ -172,7 +188,7 @@ def scan_today_city(city_slug, balance):
             continue
         volume = float(market.get("volume", 0) or 0)
         rows.append(edge_row(city_slug, today, forecast, source, sigma, unit,
-                             rng[0], rng[1], yes, ask, volume, balance))
+                             rng[0], rng[1], yes, ask, volume, balance, url=url))
     return rows
 
 

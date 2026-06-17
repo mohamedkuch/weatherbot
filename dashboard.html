@@ -77,6 +77,10 @@
   td.flash{animation:flash .6s ease-out}
   @keyframes flash{from{background:var(--accent-bg)} to{background:transparent}}
   .city{font-weight:600}
+  .mlink{color:var(--text); text-decoration:none; font-weight:600}
+  .mlink:hover{color:var(--accent)}
+  .mlink .ext{color:var(--faint); font-size:11px; margin-left:1px}
+  .mlink:hover .ext{color:var(--accent)}
   .sub2{color:var(--muted); font-size:12px}
   .tag{display:inline-block; font-size:10px; font-weight:650; padding:2px 7px;
     border-radius:20px; letter-spacing:.3px; vertical-align:middle}
@@ -246,7 +250,7 @@ function rowHTML(r){
   const flash = (prev!==undefined && prev!==r.price) ? "flash" : "";
   const col = (v,c)=>`<td class="${c||""}">${v}</td>`;
   return `<tr class="${r.is_signal?"signal":""}">
-    <td class="l"><span class="city">${r.city_name}</span></td>
+    <td class="l"><a class="mlink" href="${r.url}" target="_blank" rel="noopener" title="Open on Polymarket">${r.city_name} <span class="ext">↗</span></a></td>
     ${col(`${deg(r.forecast,r.unit)} <span class="sub2">${r.source}</span>`)}
     <td class="l"><span class="bucket">${r.bucket}</span> ${tags.join(" ")}</td>
     ${col("$"+r.price.toFixed(2), flash)}
