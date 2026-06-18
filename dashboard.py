@@ -359,7 +359,7 @@ def trading_status():
     mkts = bot.load_all_markets()
     with _trading_lock:
         t = dict(TRADING)
-    t["mode"]           = "paper"
+    t["mode"]           = "live" if getattr(bot, "LIVE", False) else "paper"
     t["balance"]        = round(st.get("balance", bot.BALANCE), 2)
     t["open_positions"] = sum(1 for m in mkts
                               if m.get("position") and m["position"].get("status") == "open")

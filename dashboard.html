@@ -112,7 +112,7 @@
 
   <div class="controls" style="margin-bottom:12px">
     <button class="btn trade off" id="tradeBtn">▶ Start trading</button>
-    <span class="tradetag" title="Simulated balance & positions — no live orders">PAPER</span>
+    <span class="tradetag" id="modeTag" title="Trading mode">PAPER</span>
     <span class="hint" id="tradeStatus">Stopped</span>
     <span class="spacer"></span>
     <span class="hint" id="fcage">Open-Meteo: —</span>
@@ -245,6 +245,10 @@ function renderTrading(){
   const on=!!t.active;
   btn.textContent = on ? "⏸ Stop trading" : "▶ Start trading";
   btn.className = "btn trade " + (on?"on":"off");
+  const tag=$("#modeTag"), live=(t.mode==="live");
+  tag.textContent = live ? "LIVE" : "PAPER";
+  tag.style.color = tag.style.borderColor = live ? "var(--red)" : "var(--amber)";
+  tag.title = live ? "LIVE — places real Polymarket orders" : "Paper — simulated, no live orders";
   const bal = t.balance!=null ? "$"+Number(t.balance).toFixed(2) : "—";
   st.textContent = on
     ? `Trading · since ${t.started_at?new Date(t.started_at).toLocaleTimeString():""} · ${bal} · ${t.open_positions||0} open · ${t.total_trades||0} trades`

@@ -72,6 +72,11 @@ VC_KEY           = _cfg.get("vc_key", "")
 # commercial endpoint with higher rate limits.
 OM_KEY  = (os.environ.get("OPENMETEO_API_KEY") or os.environ.get("OM_KEY")
            or _cfg.get("om_key", ""))
+
+# LIVE trading switch. Default OFF (paper). Set LIVE=1 in the environment to
+# place real Polymarket orders via live_trader. The bot's balance accounting
+# caps total exposure at `balance`, so it never spends more than your wallet.
+LIVE = os.environ.get("LIVE") == "1"
 OM_BASE = ("https://customer-api.open-meteo.com/v1/forecast" if OM_KEY
            else "https://api.open-meteo.com/v1/forecast")
 OM_AUTH = f"&apikey={OM_KEY}" if OM_KEY else ""
@@ -624,9 +629,17 @@ def scan_and_update():
                     bid = float(market.get("bestBid") or yes_price)
                 except Exception:
                     continue
+                # YES outcome's CLOB token id — needed to place a live order
+                # (the gamma market_id is NOT the token id).
+                try:
+                    clob_ids = json.loads(market.get("clobTokenIds", "[]"))
+                    token_id = clob_ids[0] if clob_ids else None
+                except Exception:
+                    token_id = None
                 outcomes.append({
                     "question":  question,
                     "market_id": mid,
+                    "token_id":  token_id,
                     "range":     rng,
                     "bid":       round(bid, 4),
                     "ask":       round(ask, 4),
@@ -766,6 +779,7 @@ def scan_and_update():
                             if size >= 0.50:
                                 best_signal = {
                                     "market_id":    o["market_id"],
+                                    "token_id":     o.get("token_id"),
                                     "question":     o["question"],
                                     "bucket_low":   t_low,
                                     "bucket_high":  t_high,
@@ -820,14 +834,37 @@ def scan_and_update():
                         skip_position = True
 
                     if not skip_position and best_signal["entry_price"] < MAX_PRICE:
-                        balance -= best_signal["cost"]
-                        mkt["position"] = best_signal
-                        state["total_trades"] += 1
-                        new_pos += 1
-                        bucket_label = f"{best_signal['bucket_low']}-{best_signal['bucket_high']}{unit_sym}"
-                        print(f"  [BUY]  {loc['name']} {horizon} {date} | {bucket_label} | "
-                              f"${best_signal['entry_price']:.3f} | EV {best_signal['ev']:+.2f} | "
-                              f"${best_signal['cost']:.2f} ({best_signal['forecast_src'].upper()})")
+                        # When LIVE=1, place the real Polymarket order first and
+                        # only book the position if it actually went through. If
+                        # it fails (or there's no token id), we skip booking so
+                        # paper state never diverges from the live account.
+                        live_ok = True
+                        if LIVE:
+                            live_ok = False
+                            if not best_signal.get("token_id"):
+                                print(f"  [LIVE] {loc['name']} {date} — no token_id, skipping")
+                            else:
+                                try:
+                                    import live_trader
+                                    resp = live_trader.place_buy(
+                                        best_signal["token_id"],
+                                        best_signal["entry_price"],
+                                        best_signal["shares"])
+                                    best_signal["live_order"] = str(resp)
+                                    live_ok = True
+                                    print(f"  [LIVE] order placed: {resp}")
+                                except Exception as e:
+                                    print(f"  [LIVE] order FAILED, not booking: {e}")
+                        if live_ok:
+                            balance -= best_signal["cost"]
+                            mkt["position"] = best_signal
+                            state["total_trades"] += 1
+                            new_pos += 1
+                            bucket_label = f"{best_signal['bucket_low']}-{best_signal['bucket_high']}{unit_sym}"
+                            tag = "LIVE BUY" if LIVE else "BUY"
+                            print(f"  [{tag}]  {loc['name']} {horizon} {date} | {bucket_label} | "
+                                  f"${best_signal['entry_price']:.3f} | EV {best_signal['ev']:+.2f} | "
+                                  f"${best_signal['cost']:.2f} ({best_signal['forecast_src'].upper()})")
 
             # Market closed by time
             if hours < 0.5 and mkt["status"] == "open":
