@@ -32,8 +32,11 @@ import bot_v2 as bot
 
 HERE = Path(__file__).resolve().parent
 
-# No caching anywhere — every poll cycle refetches both the forecast and the
-# Polymarket prices fresh.
+# Forecasts change only a few times a day (model runs), so cache them per city
+# and re-fetch only when stale — this keeps Open-Meteo usage tiny. Polymarket
+# PRICES are refetched every cycle (they move constantly).
+FORECAST_TTL = 600   # seconds — re-fetch a city's forecast at most every 10 min
+CYCLE_PAUSE  = 8     # seconds between price-refresh cycles
 
 
 # ----------------------------------------------------------------------------
@@ -155,14 +158,29 @@ def scan_city(city_slug, days, balance):
 FEED = {"rows": [], "updated_at": None, "cycle_ms": None,
         "open_cities": 0, "ready": False}
 _feed_lock = threading.Lock()
+_fc_cache  = {}            # city -> (fetched_at, today, snapshot)
+_fc_lock   = threading.Lock()
+
+
+def _forecast_today(city_slug):
+    """Today's forecast snapshot, cached for FORECAST_TTL seconds."""
+    today = bot.city_now(city_slug).strftime("%Y-%m-%d")
+    now   = time.time()
+    with _fc_lock:
+        ent = _fc_cache.get(city_slug)
+        if ent and ent[1] == today and now - ent[0] < FORECAST_TTL:
+            return today, ent[2]
+    snap = bot.take_forecast_snapshot(city_slug, [today]).get(today, {})
+    with _fc_lock:
+        _fc_cache[city_slug] = (now, today, snap)
+    return today, snap
 
 
 def scan_today_city(city_slug, balance):
-    """Edge rows for a city's TODAY market — forecast AND prices fetched fresh."""
+    """Edge rows for a city's TODAY market — cached forecast, live prices."""
     loc      = bot.LOCATIONS[city_slug]
     unit     = loc["unit"]
-    today    = bot.city_now(city_slug).strftime("%Y-%m-%d")
-    snap     = bot.take_forecast_snapshot(city_slug, [today]).get(today, {})  # fresh, no cache
+    today, snap = _forecast_today(city_slug)
     forecast = snap.get("best")
     source   = snap.get("best_source")
     if forecast is None:
@@ -217,7 +235,7 @@ def poller(stop_event):
             FEED["cycle_ms"]    = int((time.time() - t0) * 1000)
             FEED["open_cities"] = len({r["city"] for r in rows})
             FEED["ready"]       = True
-        stop_event.wait(0.25)  # loop again almost immediately — always fresh
+        stop_event.wait(CYCLE_PAUSE)  # pace price-refresh cycles
 
 
 # ----------------------------------------------------------------------------

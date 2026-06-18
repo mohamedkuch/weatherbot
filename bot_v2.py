@@ -12,6 +12,7 @@ Usage:
     python bot_v2.py status   # balance and open positions
 """
 
+import os
 import re
 import sys
 import json
@@ -21,6 +22,23 @@ import requests
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from pathlib import Path
+
+
+def _load_dotenv():
+    """Minimal .env loader (no dependency): populate os.environ from ./.env."""
+    p = Path(__file__).resolve().parent / ".env"
+    if not p.exists():
+        return
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):]
+        k, _, v = line.partition("=")
+        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+_load_dotenv()
 
 # =============================================================================
 # CONFIG
@@ -48,6 +66,15 @@ MAX_SLIPPAGE     = _cfg.get("max_slippage", 0.03)  # max allowed ask-bid spread
 SCAN_INTERVAL    = _cfg.get("scan_interval", 3600)   # every hour
 CALIBRATION_MIN  = _cfg.get("calibration_min", 30)
 VC_KEY           = _cfg.get("vc_key", "")
+
+# Open-Meteo API key (paid/standard plan). Set OPENMETEO_API_KEY in .env (or the
+# environment), or "om_key" in config.json. When present, requests go to the
+# commercial endpoint with higher rate limits.
+OM_KEY  = (os.environ.get("OPENMETEO_API_KEY") or os.environ.get("OM_KEY")
+           or _cfg.get("om_key", ""))
+OM_BASE = ("https://customer-api.open-meteo.com/v1/forecast" if OM_KEY
+           else "https://api.open-meteo.com/v1/forecast")
+OM_AUTH = f"&apikey={OM_KEY}" if OM_KEY else ""
 
 SIGMA_F = 2.0
 SIGMA_C = 1.2
@@ -222,11 +249,12 @@ def get_ecmwf(city_slug, dates):
     temp_unit = "fahrenheit" if unit == "F" else "celsius"
     result = {}
     url = (
-        f"https://api.open-meteo.com/v1/forecast"
+        f"{OM_BASE}"
         f"?latitude={loc['lat']}&longitude={loc['lon']}"
         f"&daily=temperature_2m_max&temperature_unit={temp_unit}"
         f"&forecast_days=7&timezone={TIMEZONES.get(city_slug, 'UTC')}"
         f"&models=ecmwf_ifs025&bias_correction=true"
+        f"{OM_AUTH}"
     )
     for attempt in range(3):
         try:
@@ -253,11 +281,12 @@ def get_hrrr(city_slug, dates):
         return {}
     result = {}
     url = (
-        f"https://api.open-meteo.com/v1/forecast"
+        f"{OM_BASE}"
         f"?latitude={loc['lat']}&longitude={loc['lon']}"
         f"&daily=temperature_2m_max&temperature_unit=fahrenheit"
         f"&forecast_days=3&timezone={TIMEZONES.get(city_slug, 'UTC')}"
         f"&models=gfs_seamless"  # HRRR+GFS seamless — best option for US
+        f"{OM_AUTH}"
     )
     for attempt in range(3):
         try:

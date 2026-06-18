@@ -112,14 +112,18 @@ python dashboard.py            # serve on http://localhost:8787
 python dashboard.py 9000       # custom port
 ```
 
-- **Live feed** — a background thread continuously re-fetches today's forecasts
-  **and** Polymarket prices for all 20 cities (in parallel) into memory; the browser
-  polls every 5s and re-renders, so the table updates on its own — no buttons to
-  press. Changed prices flash.
-- **No caching anywhere** — every cycle pulls everything fresh, and responses are
-  sent `no-store`. A full fresh cycle over all 20 cities takes ~5s.
+- **Live feed** — a background thread keeps an in-memory snapshot fresh; the browser
+  polls every few seconds and re-renders, so the table updates on its own — no
+  buttons to press. Changed prices flash.
+- **Prices live, forecasts cached** — Polymarket prices are refetched every cycle
+  (~10s); forecasts are cached ~10 min (weather models only update a few times a
+  day), which keeps Open-Meteo usage tiny — a few thousand calls/day.
 - Signals (what the bot would actually enter) are highlighted; filter by region,
   signals-only, or the forecast's own bucket; sort any column; pause/resume.
+
+**Open-Meteo key (optional):** put `OPENMETEO_API_KEY=...` in a `.env` file (it's
+gitignored). The bot and dashboard auto-load `.env` and switch to Open-Meteo's
+commercial endpoint with higher limits. Without a key it uses the free endpoint.
 
 No extra dependencies — pure stdlib (`http.server` + `concurrent.futures`) plus
 `requests` (already required by the bot). The feed shows whichever cities currently
