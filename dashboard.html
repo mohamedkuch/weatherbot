@@ -157,7 +157,8 @@ async function boot(){
   c.cities.forEach(x => REGION[x.slug] = x.region);
   $("#cfg").textContent = `EV ≥ ${CFG.min_ev} · price < $${CFG.max_price} · vol ≥ ${CFG.min_volume}`;
   tick();                       // first fetch
-  setInterval(tick, 5000);      // live feed: every 5s
+  setInterval(tick, 2500);      // poll the local feed often so the ~5s server
+                                // refresh shows up promptly (no external calls)
   setInterval(renderStatus, 1000);
 }
 

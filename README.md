@@ -115,9 +115,9 @@ python dashboard.py 9000       # custom port
 - **Live feed** — a background thread keeps an in-memory snapshot fresh; the browser
   polls every few seconds and re-renders, so the table updates on its own — no
   buttons to press. Changed prices flash.
-- **Prices live, forecasts cached** — Polymarket prices are refetched every cycle
-  (~10s); forecasts are cached ~10 min (weather models only update a few times a
-  day), which keeps Open-Meteo usage tiny — a few thousand calls/day.
+- **Prices live, forecasts cached** — Polymarket odds (and the edge/EV derived from
+  them) refresh every ~5s; forecasts are cached ~10 min (weather models only update
+  a few times a day), which keeps Open-Meteo usage tiny — a few thousand calls/day.
 - Signals (what the bot would actually enter) are highlighted; filter by region,
   signals-only, or the forecast's own bucket; sort any column; pause/resume.
 

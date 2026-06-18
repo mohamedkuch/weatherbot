@@ -34,9 +34,9 @@ HERE = Path(__file__).resolve().parent
 
 # Forecasts change only a few times a day (model runs), so cache them per city
 # and re-fetch only when stale — this keeps Open-Meteo usage tiny. Polymarket
-# PRICES are refetched every cycle (they move constantly).
-FORECAST_TTL = 600   # seconds — re-fetch a city's forecast at most every 10 min
-CYCLE_PAUSE  = 8     # seconds between price-refresh cycles
+# PRICES (and the edge/EV derived from them) are refetched every cycle.
+FORECAST_TTL  = 600  # seconds — re-fetch a city's forecast at most every 10 min
+PRICE_REFRESH = 5    # seconds — target cadence for refreshing Polymarket odds
 
 
 # ----------------------------------------------------------------------------
@@ -235,7 +235,10 @@ def poller(stop_event):
             FEED["cycle_ms"]    = int((time.time() - t0) * 1000)
             FEED["open_cities"] = len({r["city"] for r in rows})
             FEED["ready"]       = True
-        stop_event.wait(CYCLE_PAUSE)  # pace price-refresh cycles
+        # Hold a ~PRICE_REFRESH-second cadence: only sleep the time left over
+        # after the cycle's own work, so odds refresh every ~5s.
+        elapsed = time.time() - t0
+        stop_event.wait(max(0.0, PRICE_REFRESH - elapsed))
 
 
 # ----------------------------------------------------------------------------
