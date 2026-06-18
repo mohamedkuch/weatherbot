@@ -35,7 +35,10 @@ def _get_client():
             pk = os.environ.get("POLYMARKET_PRIVATE_KEY")
             if not pk:
                 raise RuntimeError("POLYMARKET_PRIVATE_KEY not set in environment/.env")
-            sig_type = int(os.environ.get("POLYMARKET_SIG_TYPE", "0"))
+            # signature_type=1 (Polymarket proxy) + funder=POLYMARKET_ADDRESS —
+            # matches the working polymarket-mcp config for this wallet.
+            sig_type = int(os.environ.get("POLYMARKET_SIGNATURE_TYPE")
+                           or os.environ.get("POLYMARKET_SIG_TYPE") or "1")
             funder   = os.environ.get("POLYMARKET_ADDRESS")
             c = ClobClient(HOST, key=pk, chain_id=CHAIN_ID,
                            signature_type=sig_type, funder=funder)
