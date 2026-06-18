@@ -160,6 +160,7 @@ FEED = {"rows": [], "updated_at": None, "cycle_ms": None,
 _feed_lock = threading.Lock()
 _fc_cache  = {}            # city -> (fetched_at, today, snapshot)
 _fc_lock   = threading.Lock()
+LAST_FORECAST_FETCH = None # ISO time of the most recent actual Open-Meteo fetch
 
 
 def _forecast_today(city_slug):
@@ -171,6 +172,8 @@ def _forecast_today(city_slug):
         if ent and ent[1] == today and now - ent[0] < FORECAST_TTL:
             return today, ent[2]
     snap = bot.take_forecast_snapshot(city_slug, [today]).get(today, {})
+    global LAST_FORECAST_FETCH
+    LAST_FORECAST_FETCH = datetime.now(timezone.utc).isoformat()
     with _fc_lock:
         _fc_cache[city_slug] = (now, today, snap)
     return today, snap
@@ -230,11 +233,12 @@ def poller(stop_event):
             for r in ex.map(lambda c: _safe_scan(c, balance), cities):
                 rows.extend(r)
         with _feed_lock:
-            FEED["rows"]        = rows
-            FEED["updated_at"]  = datetime.now(timezone.utc).isoformat()
-            FEED["cycle_ms"]    = int((time.time() - t0) * 1000)
-            FEED["open_cities"] = len({r["city"] for r in rows})
-            FEED["ready"]       = True
+            FEED["rows"]               = rows
+            FEED["updated_at"]         = datetime.now(timezone.utc).isoformat()
+            FEED["cycle_ms"]           = int((time.time() - t0) * 1000)
+            FEED["open_cities"]        = len({r["city"] for r in rows})
+            FEED["forecast_fetched_at"] = LAST_FORECAST_FETCH
+            FEED["ready"]              = True
         # Hold a ~PRICE_REFRESH-second cadence: only sleep the time left over
         # after the cycle's own work, so odds refresh every ~5s.
         elapsed = time.time() - t0
@@ -291,6 +295,79 @@ def stored_data():
 
 
 # ----------------------------------------------------------------------------
+# Trading controller — start/stop the bot's trading loop from the UI
+# ----------------------------------------------------------------------------
+
+TRADING = {"active": False, "started_at": None, "last_scan": None, "scans": 0}
+_trading_lock   = threading.Lock()
+_trading_stop   = None
+_trading_thread = None
+
+
+def _trading_loop(stop_event):
+    """Run the bot's existing scan/monitor cycle until stopped.
+
+    Calls bot_v2.scan_and_update() (opens/closes positions on the EV signal)
+    and monitor_positions() (stops/take-profit) — the SAME paper-trading logic
+    the CLI runs: simulated balance, positions saved under data/. No live orders.
+    """
+    last_full = 0.0
+    last_monitor = 0.0
+    while not stop_event.is_set():
+        now = time.time()
+        try:
+            if last_full == 0.0 or now - last_full >= bot.SCAN_INTERVAL:
+                bot.scan_and_update()
+                last_full = last_monitor = time.time()
+                TRADING["scans"] += 1
+                TRADING["last_scan"] = datetime.now(timezone.utc).isoformat()
+            elif now - last_monitor >= bot.MONITOR_INTERVAL:
+                bot.monitor_positions()
+                last_monitor = time.time()
+                TRADING["last_scan"] = datetime.now(timezone.utc).isoformat()
+        except Exception as e:
+            print(f"[trading] error: {e}")
+        stop_event.wait(2)  # check the stop flag often so Stop is responsive
+
+
+def start_trading():
+    global _trading_stop, _trading_thread
+    with _trading_lock:
+        if TRADING["active"]:
+            return False
+        _trading_stop   = threading.Event()
+        _trading_thread = threading.Thread(target=_trading_loop,
+                                           args=(_trading_stop,), daemon=True)
+        TRADING["active"]     = True
+        TRADING["started_at"] = datetime.now(timezone.utc).isoformat()
+        _trading_thread.start()
+    return True
+
+
+def stop_trading():
+    with _trading_lock:
+        if not TRADING["active"]:
+            return False
+        if _trading_stop:
+            _trading_stop.set()
+        TRADING["active"] = False
+    return True
+
+
+def trading_status():
+    st   = bot.load_state()
+    mkts = bot.load_all_markets()
+    with _trading_lock:
+        t = dict(TRADING)
+    t["mode"]           = "paper"
+    t["balance"]        = round(st.get("balance", bot.BALANCE), 2)
+    t["open_positions"] = sum(1 for m in mkts
+                              if m.get("position") and m["position"].get("status") == "open")
+    t["total_trades"]   = st.get("total_trades", 0)
+    return t
+
+
+# ----------------------------------------------------------------------------
 # HTTP server
 # ----------------------------------------------------------------------------
 
@@ -332,7 +409,9 @@ class Handler(BaseHTTPRequestHandler):
 
             if path == "/api/feed":
                 with _feed_lock:
-                    return self._json(dict(FEED))
+                    data = dict(FEED)
+                data["trading"] = trading_status()
+                return self._json(data)
 
             if path == "/api/stored":
                 return self._json(stored_data())
@@ -344,6 +423,17 @@ class Handler(BaseHTTPRequestHandler):
                 rows = scan_city(city, days, balance)
                 return self._json({"city": city, "rows": rows})
 
+            return self._json({"error": "not found"}, 404)
+        except Exception as e:
+            return self._json({"error": str(e)}, 500)
+
+    def do_POST(self):
+        path = urlparse(self.path).path
+        try:
+            if path == "/api/trading/start":
+                return self._json({"ok": start_trading(), "trading": trading_status()})
+            if path == "/api/trading/stop":
+                return self._json({"ok": stop_trading(), "trading": trading_status()})
             return self._json({"error": "not found"}, 404)
         except Exception as e:
             return self._json({"error": str(e)}, 500)

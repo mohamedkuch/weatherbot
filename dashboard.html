@@ -58,6 +58,11 @@
   .chk input{accent-color:var(--accent)}
   .spacer{flex:1}
   .hint{color:var(--faint); font-size:12px}
+  .btn.trade{font-weight:650}
+  .btn.trade.off{background:var(--green); color:#06210f; border-color:var(--green)}
+  .btn.trade.on{background:var(--red); color:#fff; border-color:var(--red)}
+  .tradetag{font-size:10px; font-weight:700; letter-spacing:.5px; color:var(--amber);
+    border:1px solid var(--amber); border-radius:5px; padding:1px 6px}
 
   /* table */
   .tablewrap{margin-top:16px; border:1px solid var(--border); border-radius:var(--radius);
@@ -105,6 +110,14 @@
 
   <div class="cards" id="cards"></div>
 
+  <div class="controls" style="margin-bottom:12px">
+    <button class="btn trade off" id="tradeBtn">▶ Start trading</button>
+    <span class="tradetag" title="Simulated balance & positions — no live orders">PAPER</span>
+    <span class="hint" id="tradeStatus">Stopped</span>
+    <span class="spacer"></span>
+    <span class="hint" id="fcage">Open-Meteo: —</span>
+  </div>
+
   <div class="controls">
     <select id="region">
       <option value="all">All regions</option>
@@ -144,6 +157,7 @@ let CFG = {min_ev:0.1}, REGION = {}, MODE_REGION = "all";
 let ROWS = [], PREV = {}, META = {};
 let SORT = {k:"edge", dir:-1};
 let PAUSED = false, lastMs = 0;
+let TRADING = {}, FC_MS = 0;
 
 const fmtPct  = x => x==null ? "—" : (x*100).toFixed(0)+"%";
 const fmtSign = x => (x>=0?"+":"") + x.toFixed(3);
@@ -175,6 +189,9 @@ async function tick(){
       }
     }
     ROWS = d.rows || [];
+    TRADING = d.trading || {};
+    FC_MS = d.forecast_fetched_at ? Date.parse(d.forecast_fetched_at) : 0;
+    renderTrading();
     render();
   }catch(e){ $("#status").textContent = "reconnecting…"; }
 }
@@ -206,13 +223,32 @@ function renderCards(){
     `<div class="card"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join("");
 }
 
+function ago(ms){
+  const s = Math.max(0, Math.round((Date.now()-ms)/1000));
+  return s < 90 ? s+"s ago" : Math.round(s/60)+"m ago";
+}
+
 function renderStatus(){
+  // forecast age always updates (even when the price feed is paused)
+  $("#fcage").textContent = FC_MS
+    ? "Open-Meteo forecasts: refreshed " + ago(FC_MS) : "Open-Meteo: fetching…";
   const dot = $("#dot");
   if(PAUSED){ dot.classList.add("paused"); $("#status").textContent="paused"; return; }
   dot.classList.remove("paused");
   if(!lastMs){ $("#status").textContent="warming up…"; return; }
-  const ago = Math.max(0, Math.round((Date.now()-lastMs)/1000));
-  $("#status").innerHTML = `<b>LIVE</b> · updated ${ago}s ago · ${META.open_cities||0} cities`;
+  $("#status").innerHTML = `<b>LIVE</b> · updated ${ago(lastMs)} · ${META.open_cities||0} cities`;
+}
+
+function renderTrading(){
+  const t=TRADING, btn=$("#tradeBtn"), st=$("#tradeStatus");
+  if(!btn) return;
+  const on=!!t.active;
+  btn.textContent = on ? "⏸ Stop trading" : "▶ Start trading";
+  btn.className = "btn trade " + (on?"on":"off");
+  const bal = t.balance!=null ? "$"+Number(t.balance).toFixed(2) : "—";
+  st.textContent = on
+    ? `Trading · since ${t.started_at?new Date(t.started_at).toLocaleTimeString():""} · ${bal} · ${t.open_positions||0} open · ${t.total_trades||0} trades`
+    : `Stopped · ${bal} · ${t.open_positions||0} open`;
 }
 
 function render(){
@@ -272,6 +308,15 @@ $("#pause").addEventListener("click", ()=>{
   $("#pause").textContent = PAUSED ? "▶ Resume" : "⏸ Pause";
   if(!PAUSED) tick();
   renderStatus();
+});
+$("#tradeBtn").addEventListener("click", async ()=>{
+  const on=!!TRADING.active, btn=$("#tradeBtn");
+  btn.disabled=true;
+  try{
+    const r=await fetch("/api/trading/"+(on?"stop":"start"), {method:"POST", cache:"no-store"});
+    const d=await r.json(); TRADING=d.trading||{}; renderTrading();
+  }catch(e){}
+  btn.disabled=false;
 });
 document.querySelectorAll("thead th").forEach(th=>{
   th.addEventListener("click", ()=>{
